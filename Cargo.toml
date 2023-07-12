@@ -9,7 +9,7 @@ edition = "2021"
 minicaldav = "0.8.0"
 ureq = "2.7.1"
 url = { version = "2" }
-thiserror = "1.0.43"
 toml = "0.7.6"
 chrono = "0.4.26"
-
+base64 = "0.21.2"
+xmltree = "0.10.3"

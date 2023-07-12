@@ -6,6 +6,10 @@ use toml;
 use ureq::Agent;
 use url::{ParseError as UrlError, Url};
 
+pub mod task;
+pub mod caldav;
+use task::{Error as TaskError, Task};
+
 #[derive(Debug)]
 pub enum Error {
     File(IOError),
@@ -17,6 +21,7 @@ pub enum Error {
         section: &'static str,
     },
     Caldav(CaldavError),
+    MyCaldav(caldav::Error),
     InvalidConfigValue(&'static str),
 }
 
@@ -44,10 +49,16 @@ impl From<minicaldav::Error> for Error {
     }
 }
 
-struct Config {
-    url: Url,
-    credentials: Credentials,
-    calendar_name: String,
+impl From<caldav::Error> for Error {
+    fn from(err: caldav::Error) -> Self {
+        Self::MyCaldav(err)
+    }
+}
+
+pub struct Config {
+    pub url: Url,
+    pub credentials: Credentials,
+    pub calendar_name: String,
 }
 
 pub struct Server {
