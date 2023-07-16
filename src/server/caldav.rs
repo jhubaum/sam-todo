@@ -2,6 +2,7 @@ use base64;
 use std::collections::HashMap;
 use ureq::Agent;
 use url::{ParseError as UrlError, Url};
+use chrono::ParseError as DateTimeError;
 
 #[derive(Debug)]
 // TODO: Implement std error trait
@@ -9,12 +10,19 @@ pub enum Error {
     // TODO: Make message error more meaningful.
     Message(String),
     Url(url::ParseError),
+    DateTime(DateTimeError),
     Xml(xmltree::ParseError),
 }
 
 impl From<UrlError> for Error {
     fn from(err: UrlError) -> Error {
         Error::Url(err)
+    }
+}
+
+impl From<DateTimeError> for Error {
+    fn from(err: DateTimeError) -> Error {
+        Error::DateTime(err)
     }
 }
 
@@ -35,6 +43,155 @@ impl Credentials {
     }
 }
 
+mod ical {
+    use super::{Error, Result};
+    use chrono::{DateTime, Utc, NaiveDateTime};
+    type UtcDateTime = DateTime<Utc>;
+
+    #[derive(Debug, Default)]
+    pub struct Data {
+        pub tasks: Vec<Task>,
+    }
+
+    #[derive(Debug, Default, Clone)]
+    pub struct Task {
+        pub summary: String,
+        pub description: Option<String>,
+        pub completed: Option<UtcDateTime>,
+    }
+
+    #[derive(Default)]
+    struct TaskBuilder {
+        task: Option<Task>,
+        // The required fields for the task
+        summary: Option<String>,
+    }
+
+    fn parse_utc_timestamp(ts: &str) -> Result<UtcDateTime> {
+        Ok(NaiveDateTime::parse_from_str(ts, "%Y%m%dT%H%M%SZ")?.and_utc())
+    }
+
+    impl TaskBuilder {
+        fn consume_field(&mut self, key: &str, value: &str) -> Result<()> {
+            match key {
+                "SUMMARY" => self.summary(value),
+                "COMPLETED" => self.data()?.completed = Some(parse_utc_timestamp(value)?),
+                _ => println!("Unhandled task line: {}:{}", key, value)
+            }
+            Ok(())
+        }
+        fn summary(&mut self, summary: &str) {
+            self.summary = Some(summary.to_owned());
+        }
+
+        fn start_new(&mut self) -> Result<()> {
+            match self.task {
+                None => {
+                    self.task = Some(Task::default());
+                    Ok(())
+                },
+                Some(_) => Err(Error::Message("Tried to create new task while another one is being build".to_owned()))
+            }
+        }
+
+        fn data(&mut self) -> Result<&mut Task> {
+            self.task.as_mut().ok_or(Error::Message("Tried to modify task from empty TaskBuilder".to_owned()))
+        }
+
+        fn build(&mut self) -> Result<Task> {
+            let mut task = self.task.take().ok_or(Error::Message("Tried to create task from empty TaskBuilder".to_owned()))?;
+            self.task = None;
+
+            task.summary = self
+                .summary
+                .clone()
+                .ok_or(Error::Message("Missing Summary in TaskBuilder".to_owned()))?;
+            Ok(task)
+        }
+    }
+
+    #[derive(PartialEq)]
+    enum State {
+        Done,
+        Calendar,
+        TimeZone,
+        TimeZoneStandard,
+        TimeZoneDaylight,
+        Task,
+    }
+
+    impl TryFrom<std::str::Lines<'_>> for Data {
+        type Error = Error;
+
+        fn try_from(mut lines: std::str::Lines) -> Result<Self> {
+            // TODO: Wrap into KeyValue (or Line) struct
+            fn split<'a>(line: &'a str) -> Result<(&'a str, &'a str)> {
+                let delim = line.find(":").ok_or(Error::Message(format!(
+                    "Invalid ICalFormat line: '{}'",
+                    line
+                )))?;
+                // TODO: Split key at ';' for additional arguments
+                Ok((&line[..delim], &line[delim + 1..]))
+            }
+
+            fn expect(line: (&str, &str), key: &str, value: &str) -> Result<()> {
+                Ok(())
+            }
+
+            fn expect_key(line: (&str, &str), key: &str) -> Result<()> {
+                Ok(())
+            }
+
+            // Begin
+            // TODO: Rewrite as Line::from(lines.next())?.expect(...)?, get rid of unwrap
+            expect(split(lines.next().unwrap())?, "BEGIN", "VCALENDAR")?;
+            expect(split(lines.next().unwrap())?, "VERSION", "2.0")?;
+            expect_key(split(lines.next().unwrap())?, "PRODID")?;
+
+            let mut state = State::Calendar;
+
+            let mut data = Data::default();
+            let mut taskbuilder = TaskBuilder::default();
+
+            for line in lines {
+                // TODO: Add debug logging for the line here
+                //println!("Line: {}", line);
+                match (split(line)?, &state) {
+                    (_, State::Done) => {
+                        return Err(Error::Message(String::from(
+                            "Unexpected line after \"END:VCALENDAR\"",
+                        )))
+                    }
+                    (("BEGIN", "VTODO"), State::Calendar) => {
+                        state = State::Task;
+                        taskbuilder.start_new()?;
+                    }
+                    (("BEGIN", tag), _) => println!("Unhandled begin: {}", tag),
+                    (("END", "VTODO"), State::Task) => {
+                        state = State::Calendar;
+                        data.tasks.push(
+                            taskbuilder.build()?
+                        );
+                    }
+                    (("END", "VCALENDAR"), State::Calendar) => state = State::Done,
+                    (("END", tag), _) => println!("Unhandled end: {}", tag),
+                    ((key, value), State::Task) => {
+                        taskbuilder.consume_field(key, value)?;
+                    }
+                    //((key, value), _) => println!("Unhandled iCal line: {}:{}", key, value),
+                    _ => {}
+                };
+            }
+
+            if state != State::Done {
+                return Err(Error::Message("Unexpected end of iCal data".to_owned()));
+            }
+
+            Ok(data)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Calendar {
     pub url: Url,
@@ -42,19 +199,23 @@ pub struct Calendar {
     pub name: String,
 }
 
+// TODO: consolidate with ical::Task, pass url and etag as default values to TaskBuilder
 #[derive(Debug)]
 pub struct Task {
     pub url: Url,
     pub etag: Option<String>,
+    pub data: ical::Task
 }
 
 impl Task {
-    fn from_data(data: &XMLData, calendar_url: &Url) -> Result<Self> {
-        println!("Task: {:?}", data);
-        Ok(Self {
-            url: calendar_url.join(&data.href)?,
-            etag: data.etag(),
-        })
+    fn from_data(data: &XMLData, calendar_url: &Url) -> Result<Vec<Self>> {
+        let mut tasks = Vec::new();
+        let url = calendar_url.join(&data.href)?;
+        let etag = data.etag();
+        for task in data.ical().unwrap_or(&ical::Data::default()).tasks.iter() {
+            tasks.push(Task { url: url.clone(), etag: etag.clone(), data: task.clone() } );
+        }
+        Ok(tasks)
     }
 }
 
@@ -97,27 +258,11 @@ impl CalProp {
 }
 
 #[derive(Debug)]
-struct ICalData {}
-
-impl ICalData {
-    fn from_lines(lines: std::str::Lines) -> Result<Self> {
-        for line in lines {
-            let delim = line.find(":").ok_or(Error::Message(format!(
-                "Invalid ICalFormat line: '{}'",
-                line
-            )))?;
-            println!("Key: {:?}\tValue: {:?}", &line[..delim], &line[delim..]);
-        }
-        Ok(Self {})
-    }
-}
-
-#[derive(Debug)]
 enum Property {
     Etag(String),
     // TODO: Store lines iterator and make the entire XMLData work based on references
     // over the xml data (-> no string copy for xml_to_text)
-    CalendarData(ICalData),
+    CalendarData(ical::Data),
     // A fallback handler for data I'm not reading (yet)
     Unknown(String),
 }
@@ -136,6 +281,14 @@ impl XMLData {
     fn etag(&self) -> Option<String> {
         self.properties.get("getetag").map(|v| match v {
             Property::Etag(t) => t.clone(),
+            // TODO: Rename XMLData in error message
+            _ => panic!("Logic error while constructing XMLData"),
+        })
+    }
+
+    fn ical(&self) -> Option<&ical::Data> {
+        self.properties.get("calendar-data").map(|v| match v {
+            Property::CalendarData(d) => d,
             // TODO: Rename XMLData in error message
             _ => panic!("Logic error while constructing XMLData"),
         })
@@ -167,7 +320,7 @@ impl XMLData {
                 match prop.name.as_str() {
                     "getetag" => Property::Etag(xml_to_text(prop, "")),
                     "calendar-data" => {
-                        Property::CalendarData(ICalData::from_lines(xml_to_text(prop, "").lines())?)
+                        Property::CalendarData(xml_to_text(prop, "").lines().try_into()?)
                     }
                     name => Property::Unknown(name.to_owned()),
                 },
@@ -205,7 +358,7 @@ impl Calendar {
 
         let mut tasks = Vec::new();
         for task in data.children.iter().filter_map(|c| c.as_element()) {
-            tasks.push(Task::from_data(&XMLData::parse(task)?, &self.url)?);
+            tasks.append(&mut Task::from_data(&XMLData::parse(task)?, &self.url)?);
         }
         Ok(tasks)
     }

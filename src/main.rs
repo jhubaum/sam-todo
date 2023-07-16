@@ -26,8 +26,20 @@ fn main() -> Result<(), server::Error> {
         .find(|c| c.name == config.calendar_name)
         .unwrap();
 
-    for task in calendar.query_tasks(&credentials)? {
-        println!("Task: {:?}", task);
+    println!("\n\n\n");
+    let mut tasks = calendar.query_tasks(&credentials)?;
+    tasks.sort_by_key(|e| e.etag.clone());
+    for (i, task) in tasks.iter().enumerate() {
+        println!(
+            "{}. [{}] {}",
+            i+1,
+            if task.data.completed.is_some() {
+                "X"
+            } else {
+                " "
+            },
+            task.data.summary
+        );
     }
 
     /*
