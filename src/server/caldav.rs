@@ -218,33 +218,30 @@ pub struct Calendar {
 // TODO: consolidate with ical::Task, pass url and etag as default values to TaskBuilder
 // Actually, that's a wrapper around the IcalTodo for easy access of the values in there
 #[derive(Debug)]
-pub struct Task {
+pub struct TaskCollection {
     pub url: Url,
     pub etag: Option<String>,
-    data: IcalTodo,
+    index: usize,
+    data: IcalCalendar,
 }
 
-impl Task {
+pub struct Task<'a> {
+    pub index: usize,
+    data: &'a mut IcalTodo,
+}
+
+impl Task<'_> {
     fn find_property(&self, name: &str) -> Option<&IcalProperty> {
         self.data.properties.iter().find(|p| p.name == name)
     }
 
     fn find_property_value(&self, name: &str) -> Option<&String> {
-        self.data.properties.iter().find(|p| p.name == name).map(|p| p.value.as_ref()).flatten()
-    }
-
-    fn from_data(data: &XMLData, calendar_url: &Url) -> Result<Vec<Self>> {
-        let mut tasks = Vec::new();
-        let url = calendar_url.join(&data.href)?;
-        let etag = data.etag();
-        for task in data.ical().unwrap_or(&IcalCalendar::new()).todos.iter() {
-            tasks.push(Task {
-                url: url.clone(),
-                etag: etag.clone(),
-                data: task.clone(),
-            });
-        }
-        Ok(tasks)
+        self.data
+            .properties
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| p.value.as_ref())
+            .flatten()
     }
 
     pub fn summary(&self) -> &String {
@@ -259,7 +256,26 @@ impl Task {
             .map(|v| myIcal::parse_utc_timestamp(&v).unwrap())
     }
 
-    pub fn set_completed(&mut self, ts: Option<myIcal::UtcDateTime>) {
+    pub fn set_completed(&mut self, ts: Option<myIcal::UtcDateTime>) {}
+
+}
+
+impl TaskCollection {
+    fn from_data(data: &XMLData, calendar_url: &Url, index: usize) -> Result<Self> {
+        Ok(Self {
+            index,
+            url: calendar_url.join(&data.href)?,
+            etag: data.etag(),
+            data: data.ical().unwrap_or(IcalCalendar::new()),
+        })
+    }
+
+    pub fn tasks<'a>(&'a mut self) -> Vec<Task<'a>> {
+        let mut tasks = Vec::new();
+        for todo in self.data.todos.iter_mut() {
+            tasks.push(Task { data: todo, index: self.index });
+        }
+        tasks
     }
 
     pub fn sync(&self) -> Result<()> {
@@ -334,9 +350,9 @@ impl XMLData {
         })
     }
 
-    fn ical(&self) -> Option<&IcalCalendar> {
+    fn ical(&self) -> Option<IcalCalendar> {
         self.properties.get("calendar-data").map(|v| match v {
-            Property::CalendarData(d) => d,
+            Property::CalendarData(d) => d.clone(),
             // TODO: Rename XMLData in error message
             _ => panic!("Logic error while constructing XMLData"),
         })
@@ -398,7 +414,7 @@ impl XMLData {
 }
 
 impl Calendar {
-    pub fn query_tasks(&self, credentials: &Credentials) -> Result<Vec<Task>> {
+    pub fn query_data(&self, credentials: &Credentials) -> Result<Vec<TaskCollection>> {
         let data = Request {
             req_type: "REPORT",
             depth: "1",
@@ -418,11 +434,11 @@ impl Calendar {
         }
         .perform(&self.url, credentials)?;
 
-        let mut tasks = Vec::new();
-        for task in data.children.iter().filter_map(|c| c.as_element()) {
-            tasks.append(&mut Task::from_data(&XMLData::parse(task)?, &self.url)?);
+        let mut res = Vec::new();
+        for (i, collection) in data.children.iter().filter_map(|c| c.as_element()).enumerate() {
+            res.push(TaskCollection::from_data(&XMLData::parse(collection)?, &self.url, i)?);
         }
-        Ok(tasks)
+        Ok(res)
     }
 
     fn from_xml(base_url: &Url, xml: &xmltree::Element) -> Result<Option<Self>> {
