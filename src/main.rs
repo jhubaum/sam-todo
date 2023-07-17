@@ -1,5 +1,7 @@
 pub mod server;
 
+use chrono;
+use std::env;
 use std::path::Path;
 
 use minicaldav::Credentials;
@@ -32,14 +34,31 @@ fn main() -> Result<(), server::Error> {
     for (i, task) in tasks.iter().enumerate() {
         println!(
             "{}. [{}] {}",
-            i+1,
-            if task.data.completed.is_some() {
+            i + 1,
+            if task.completed().is_some() {
                 "X"
             } else {
                 " "
             },
-            task.data.summary
+            task.summary()
         );
+    }
+
+    // Temporary fast toggle to find out how server interaction works
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 {
+        if let Ok(i) = args[1].parse::<usize>() {
+            if i > 0 && i <= tasks.len() {
+                // Toggle task
+                if tasks[i].completed().is_some() {
+                    tasks[i].set_completed(None);
+                } else {
+                    tasks[i].set_completed(Some(chrono::offset::Utc::now()));
+                }
+                println!("Toggling task {}", i);
+                tasks[i].sync()?;
+            }
+        }
     }
 
     /*

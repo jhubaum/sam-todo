@@ -6,7 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+# TODO: Remove
 minicaldav = "0.8.0"
+ical = "0.8.0"
 ureq = "2.7.1"
 url = { version = "2" }
 toml = "0.7.6"

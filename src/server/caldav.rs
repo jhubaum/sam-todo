@@ -1,12 +1,18 @@
 use base64;
+use chrono::ParseError as DateTimeError;
+use ical;
+use ical::parser::ical::component::{IcalCalendar, IcalTodo};
+use ical::parser::ParserError as IcalError;
+use ical::property::Property as IcalProperty;
 use std::collections::HashMap;
+use std::io::BufReader;
 use ureq::Agent;
 use url::{ParseError as UrlError, Url};
-use chrono::ParseError as DateTimeError;
 
 #[derive(Debug)]
 // TODO: Implement std error trait
 pub enum Error {
+    Ical(IcalError),
     // TODO: Make message error more meaningful.
     Message(String),
     Url(url::ParseError),
@@ -23,6 +29,12 @@ impl From<UrlError> for Error {
 impl From<DateTimeError> for Error {
     fn from(err: DateTimeError) -> Error {
         Error::DateTime(err)
+    }
+}
+
+impl From<IcalError> for Error {
+    fn from(err: IcalError) -> Error {
+        Error::Ical(err)
     }
 }
 
@@ -43,10 +55,10 @@ impl Credentials {
     }
 }
 
-mod ical {
+mod myIcal {
     use super::{Error, Result};
-    use chrono::{DateTime, Utc, NaiveDateTime};
-    type UtcDateTime = DateTime<Utc>;
+    use chrono::{DateTime, NaiveDateTime, Utc};
+    pub type UtcDateTime = DateTime<Utc>;
 
     #[derive(Debug, Default)]
     pub struct Data {
@@ -67,7 +79,7 @@ mod ical {
         summary: Option<String>,
     }
 
-    fn parse_utc_timestamp(ts: &str) -> Result<UtcDateTime> {
+    pub fn parse_utc_timestamp(ts: &str) -> Result<UtcDateTime> {
         Ok(NaiveDateTime::parse_from_str(ts, "%Y%m%dT%H%M%SZ")?.and_utc())
     }
 
@@ -76,7 +88,7 @@ mod ical {
             match key {
                 "SUMMARY" => self.summary(value),
                 "COMPLETED" => self.data()?.completed = Some(parse_utc_timestamp(value)?),
-                _ => println!("Unhandled task line: {}:{}", key, value)
+                _ => println!("Unhandled task line: {}:{}", key, value),
             }
             Ok(())
         }
@@ -89,17 +101,23 @@ mod ical {
                 None => {
                     self.task = Some(Task::default());
                     Ok(())
-                },
-                Some(_) => Err(Error::Message("Tried to create new task while another one is being build".to_owned()))
+                }
+                Some(_) => Err(Error::Message(
+                    "Tried to create new task while another one is being build".to_owned(),
+                )),
             }
         }
 
         fn data(&mut self) -> Result<&mut Task> {
-            self.task.as_mut().ok_or(Error::Message("Tried to modify task from empty TaskBuilder".to_owned()))
+            self.task.as_mut().ok_or(Error::Message(
+                "Tried to modify task from empty TaskBuilder".to_owned(),
+            ))
         }
 
         fn build(&mut self) -> Result<Task> {
-            let mut task = self.task.take().ok_or(Error::Message("Tried to create task from empty TaskBuilder".to_owned()))?;
+            let mut task = self.task.take().ok_or(Error::Message(
+                "Tried to create task from empty TaskBuilder".to_owned(),
+            ))?;
             self.task = None;
 
             task.summary = self
@@ -169,9 +187,7 @@ mod ical {
                     (("BEGIN", tag), _) => println!("Unhandled begin: {}", tag),
                     (("END", "VTODO"), State::Task) => {
                         state = State::Calendar;
-                        data.tasks.push(
-                            taskbuilder.build()?
-                        );
+                        data.tasks.push(taskbuilder.build()?);
                     }
                     (("END", "VCALENDAR"), State::Calendar) => state = State::Done,
                     (("END", tag), _) => println!("Unhandled end: {}", tag),
@@ -200,22 +216,54 @@ pub struct Calendar {
 }
 
 // TODO: consolidate with ical::Task, pass url and etag as default values to TaskBuilder
+// Actually, that's a wrapper around the IcalTodo for easy access of the values in there
 #[derive(Debug)]
 pub struct Task {
     pub url: Url,
     pub etag: Option<String>,
-    pub data: ical::Task
+    data: IcalTodo,
 }
 
 impl Task {
+    fn find_property(&self, name: &str) -> Option<&IcalProperty> {
+        self.data.properties.iter().find(|p| p.name == name)
+    }
+
+    fn find_property_value(&self, name: &str) -> Option<&String> {
+        self.data.properties.iter().find(|p| p.name == name).map(|p| p.value.as_ref()).flatten()
+    }
+
     fn from_data(data: &XMLData, calendar_url: &Url) -> Result<Vec<Self>> {
         let mut tasks = Vec::new();
         let url = calendar_url.join(&data.href)?;
         let etag = data.etag();
-        for task in data.ical().unwrap_or(&ical::Data::default()).tasks.iter() {
-            tasks.push(Task { url: url.clone(), etag: etag.clone(), data: task.clone() } );
+        for task in data.ical().unwrap_or(&IcalCalendar::new()).todos.iter() {
+            tasks.push(Task {
+                url: url.clone(),
+                etag: etag.clone(),
+                data: task.clone(),
+            });
         }
         Ok(tasks)
+    }
+
+    pub fn summary(&self) -> &String {
+        self.find_property_value("SUMMARY").unwrap()
+    }
+
+    pub fn completed(&self) -> Option<myIcal::UtcDateTime> {
+        self.find_property_value("COMPLETED")
+            // TODO: How to deal with the parsing error here?
+            // Best option (imo): Run a verification step once in the beginning
+            // to make sure that there won't be any errors that are triggered here
+            .map(|v| myIcal::parse_utc_timestamp(&v).unwrap())
+    }
+
+    pub fn set_completed(&mut self, ts: Option<myIcal::UtcDateTime>) {
+    }
+
+    pub fn sync(&self) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -262,7 +310,7 @@ enum Property {
     Etag(String),
     // TODO: Store lines iterator and make the entire XMLData work based on references
     // over the xml data (-> no string copy for xml_to_text)
-    CalendarData(ical::Data),
+    CalendarData(IcalCalendar),
     // A fallback handler for data I'm not reading (yet)
     Unknown(String),
 }
@@ -286,7 +334,7 @@ impl XMLData {
         })
     }
 
-    fn ical(&self) -> Option<&ical::Data> {
+    fn ical(&self) -> Option<&IcalCalendar> {
         self.properties.get("calendar-data").map(|v| match v {
             Property::CalendarData(d) => d,
             // TODO: Rename XMLData in error message
@@ -320,7 +368,21 @@ impl XMLData {
                 match prop.name.as_str() {
                     "getetag" => Property::Etag(xml_to_text(prop, "")),
                     "calendar-data" => {
-                        Property::CalendarData(xml_to_text(prop, "").lines().try_into()?)
+                        let s = xml_to_text(prop, "");
+                        let buf = BufReader::new(s.as_bytes());
+                        let mut reader = ical::IcalParser::new(buf);
+                        let calendar = reader.next().transpose()?;
+                        if calendar.is_none() {
+                            return Err(Error::Message(
+                                "Element doesn't contain a calendar".to_owned(),
+                            ));
+                        }
+                        if reader.next().is_some() {
+                            return Err(Error::Message(
+                                "Element contains to many calendar elements".to_owned(),
+                            ));
+                        }
+                        Property::CalendarData(calendar.unwrap())
                     }
                     name => Property::Unknown(name.to_owned()),
                 },
