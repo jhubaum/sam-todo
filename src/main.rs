@@ -50,7 +50,7 @@ fn main() -> Result<(), server::Error> {
             println!(
                 "{}. [{}] {}",
                 i + 1,
-                if task.completed().is_some() { "X" } else { " " },
+                if task.done().is_some() { "X" } else { " " },
                 task.summary()
             );
         }
@@ -60,11 +60,12 @@ fn main() -> Result<(), server::Error> {
         if args.len() > 1 {
             if let Ok(i) = args[1].parse::<usize>() {
                 if i > 0 && i <= tasks.len() {
+                    let i = i-1;
                     // Toggle task
-                    if tasks[i].completed().is_some() {
-                        tasks[i].set_completed(None);
+                    if tasks[i].done().is_some() {
+                        tasks[i].set_undone();
                     } else {
-                        tasks[i].set_completed(Some(chrono::offset::Utc::now()));
+                        tasks[i].set_done(chrono::offset::Utc::now());
                     }
                     println!("Toggling task {}", i);
                     data_to_sync = Some(tasks[i].index);

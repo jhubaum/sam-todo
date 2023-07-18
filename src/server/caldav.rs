@@ -4,6 +4,7 @@ use ical;
 use ical::parser::ical::component::{IcalCalendar, IcalTodo};
 use ical::parser::ParserError as IcalError;
 use ical::property::Property as IcalProperty;
+use ical::generator::Emitter;
 use std::collections::HashMap;
 use std::io::BufReader;
 use ureq::Agent;
@@ -244,11 +245,42 @@ impl Task<'_> {
             .flatten()
     }
 
+    fn find_or_insert_property(&mut self, name: &str) -> &mut IcalProperty {
+        let index = self
+            .data
+            .properties
+            .iter()
+            .enumerate()
+            .find(|p| p.1.name == name)
+            .map(|p| p.0);
+        if let Some(i) = index {
+            &mut self.data.properties[i]
+        } else {
+            self.data.properties.push(IcalProperty {
+                name: name.to_owned(),
+                params: None,
+                value: None,
+            });
+            self.data.properties.last_mut().unwrap()
+        }
+    }
+
+    fn delete_property(&mut self, name: &str) {
+        let mut i = 0;
+        while i < self.data.properties.len() {
+            if self.data.properties[i].name == name {
+                self.data.properties.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     pub fn summary(&self) -> &String {
         self.find_property_value("SUMMARY").unwrap()
     }
 
-    pub fn completed(&self) -> Option<myIcal::UtcDateTime> {
+    pub fn done(&self) -> Option<myIcal::UtcDateTime> {
         self.find_property_value("COMPLETED")
             // TODO: How to deal with the parsing error here?
             // Best option (imo): Run a verification step once in the beginning
@@ -256,8 +288,13 @@ impl Task<'_> {
             .map(|v| myIcal::parse_utc_timestamp(&v).unwrap())
     }
 
-    pub fn set_completed(&mut self, ts: Option<myIcal::UtcDateTime>) {}
-
+    pub fn set_done(&mut self, ts: myIcal::UtcDateTime) {
+        let prop = self.find_or_insert_property("COMPLETED");
+        prop.value = Some(ts.format("%Y%m%dT%H%M%SZ").to_string());
+    }
+    pub fn set_undone(&mut self) {
+        self.delete_property("COMPLETED")
+    }
 }
 
 impl TaskCollection {
@@ -273,12 +310,16 @@ impl TaskCollection {
     pub fn tasks<'a>(&'a mut self) -> Vec<Task<'a>> {
         let mut tasks = Vec::new();
         for todo in self.data.todos.iter_mut() {
-            tasks.push(Task { data: todo, index: self.index });
+            tasks.push(Task {
+                data: todo,
+                index: self.index,
+            });
         }
         tasks
     }
 
     pub fn sync(&self) -> Result<()> {
+        println!("New result: {}", self.data.generate());
         Ok(())
     }
 }
@@ -435,8 +476,17 @@ impl Calendar {
         .perform(&self.url, credentials)?;
 
         let mut res = Vec::new();
-        for (i, collection) in data.children.iter().filter_map(|c| c.as_element()).enumerate() {
-            res.push(TaskCollection::from_data(&XMLData::parse(collection)?, &self.url, i)?);
+        for (i, collection) in data
+            .children
+            .iter()
+            .filter_map(|c| c.as_element())
+            .enumerate()
+        {
+            res.push(TaskCollection::from_data(
+                &XMLData::parse(collection)?,
+                &self.url,
+                i,
+            )?);
         }
         Ok(res)
     }

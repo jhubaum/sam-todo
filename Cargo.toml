@@ -8,10 +8,14 @@ edition = "2021"
 [dependencies]
 # TODO: Remove
 minicaldav = "0.8.0"
-ical = "0.8.0"
 ureq = "2.7.1"
 url = { version = "2" }
 toml = "0.7.6"
 chrono = "0.4.26"
 base64 = "0.21.2"
 xmltree = "0.10.3"
+
+[dependencies.ical]
+version = "0.8.0"
+default-features = false
+features = ["ical", "vcard", "generator"]
