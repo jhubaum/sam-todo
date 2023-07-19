@@ -1,14 +1,11 @@
-use minicaldav::{Calendar, Credentials, Error as CaldavError};
 use std::fs;
 use std::io::Error as IOError;
 use std::path::Path;
 use toml;
-use ureq::Agent;
 use url::{ParseError as UrlError, Url};
 
-pub mod task;
 pub mod caldav;
-use task::{Error as TaskError, Task};
+use caldav::{Calendar, Credentials, Error as CaldavError};
 
 #[derive(Debug)]
 pub enum Error {
@@ -21,7 +18,6 @@ pub enum Error {
         section: &'static str,
     },
     Caldav(CaldavError),
-    MyCaldav(caldav::Error),
     InvalidConfigValue(&'static str),
 }
 
@@ -43,27 +39,17 @@ impl From<toml::de::Error> for Error {
     }
 }
 
-impl From<minicaldav::Error> for Error {
-    fn from(err: minicaldav::Error) -> Self {
+impl From<caldav::Error> for Error {
+    fn from(err: caldav::Error) -> Self {
         Self::Caldav(err)
     }
 }
 
-impl From<caldav::Error> for Error {
-    fn from(err: caldav::Error) -> Self {
-        Self::MyCaldav(err)
-    }
-}
-
+#[derive(Debug)]
 pub struct Config {
     pub url: Url,
     pub credentials: Credentials,
     pub calendar_name: String,
-}
-
-pub struct Server {
-    config: Config,
-    calendar: Calendar,
 }
 
 impl Config {
@@ -100,28 +86,8 @@ impl Config {
         let password = get_string(&server, "password", "Server")?.to_owned();
         Ok(Config {
             url: Url::parse(get_string(&server, "url", "Server")?)?,
-            credentials: minicaldav::Credentials::Basic(user, password),
+            credentials: Credentials { user, password },
             calendar_name: get_string(&calendar, "name", "Calendar")?.to_owned(),
         })
-    }
-}
-
-impl Server {
-    pub fn from_toml(file: &Path) -> Result<Self, Error> {
-        let config = Config::from_toml(file)?;
-        let calendar = minicaldav::get_calendars(Agent::new(), &config.credentials, &config.url)?
-            .iter()
-            .find(|c| c.name() == &config.calendar_name)
-            .ok_or(Error::InvalidConfigValue("Invalid calendar name"))?
-            .to_owned();
-
-        Ok(Self { config, calendar })
-    }
-
-    pub fn query_tasks(&self) -> Result<Vec<minicaldav::Event>, Error> {
-        // TODO: What to do with errors?
-        let (events, _errors) =
-            minicaldav::get_todos(Agent::new(), &self.config.credentials, &self.calendar)?;
-        Ok(events)
     }
 }

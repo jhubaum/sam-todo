@@ -1,20 +1,25 @@
 pub mod server;
+pub mod ui;
+
+use ui::App;
 
 use chrono;
 use std::env;
 use std::path::Path;
 
-use minicaldav::Credentials;
-fn get_credentials(credentials: &Credentials) -> server::caldav::Credentials {
-    if let Credentials::Basic(user, password) = credentials {
-        return server::caldav::Credentials {
-            user: user.to_owned(),
-            password: password.to_owned(),
-        };
-    }
-    panic!();
-}
+use iced::{Application, Settings};
+use iced::window::Settings as WindowSettings;
 
+pub fn main() -> iced::Result {
+    App::run(Settings {
+        window: WindowSettings {
+            decorations: true,
+            ..WindowSettings::default()
+        },
+        ..Settings::default()
+    })
+}
+/*
 fn main() -> Result<(), server::Error> {
     let config = server::Config::from_toml(Path::new("config.toml"))?;
 
@@ -98,3 +103,4 @@ fn main() -> Result<(), server::Error> {
     */
     Ok(())
 }
+*/

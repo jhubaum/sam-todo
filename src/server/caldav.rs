@@ -42,6 +42,7 @@ impl From<IcalError> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 // TODO: Only use Bearer token for authentification?
+#[derive(Debug, Default)]
 pub struct Credentials {
     pub user: String,
     pub password: String,
@@ -460,6 +461,9 @@ impl XMLData {
 }
 
 impl Calendar {
+    pub fn query_url(url: &Url, credentials: &Credentials) -> Result<Vec<Calendar>> {
+        get_calendars(url, credentials)
+    }
     pub fn query_data(&self, credentials: &Credentials) -> Result<Vec<TaskCollection>> {
         let data = Request {
             req_type: "REPORT",
