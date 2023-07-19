@@ -1,10 +1,10 @@
 use base64;
 use chrono::ParseError as DateTimeError;
 use ical;
+use ical::generator::Emitter;
 use ical::parser::ical::component::{IcalCalendar, IcalTodo};
 use ical::parser::ParserError as IcalError;
 use ical::property::Property as IcalProperty;
-use ical::generator::Emitter;
 use std::collections::HashMap;
 use std::io::BufReader;
 use ureq::Agent;
@@ -318,8 +318,13 @@ impl TaskCollection {
         tasks
     }
 
-    pub fn sync(&self) -> Result<()> {
-        println!("New result: {}", self.data.generate());
+    pub fn send_updates(&self, credentials: &Credentials) -> Result<()> {
+        Request {
+            req_type: "PUT",
+            depth: "0",
+            request_data: self.data.generate(),
+        }
+        .perform(&self.url, credentials)?;
         Ok(())
     }
 }
@@ -471,9 +476,10 @@ impl Calendar {
             </c:comp-filter>
         </c:filter>
     </c:calendar-query>
-"#,
+"#
+            .to_owned(),
         }
-        .perform(&self.url, credentials)?;
+        .perform_xml(&self.url, credentials)?;
 
         let mut res = Vec::new();
         for (i, collection) in data
@@ -569,7 +575,7 @@ impl Calendar {
 struct Request {
     req_type: &'static str,
     depth: &'static str,
-    request_data: &'static str,
+    request_data: String,
 }
 
 fn xml_to_text(xml: &xmltree::Element, default: &'static str) -> String {
@@ -604,7 +610,7 @@ pub fn apply_xml_path(xml: &xmltree::Element, path: &[&str]) -> Result<String> {
 }
 
 impl Request {
-    fn perform(self, url: &Url, credentials: &Credentials) -> Result<xmltree::Element> {
+    fn perform(self, url: &Url, credentials: &Credentials) -> Result<String> {
         println!("Request:{}", self.request_data);
         let content = Agent::new()
             .request(self.req_type, url.as_str())
@@ -617,7 +623,14 @@ impl Request {
 
         println!("Response:\n{}\n", content);
 
-        Ok(xmltree::Element::parse(content.as_bytes()).map_err(|e| Error::Xml(e))?)
+        Ok(content)
+    }
+
+    fn perform_xml(self, url: &Url, credentials: &Credentials) -> Result<xmltree::Element> {
+        Ok(
+            xmltree::Element::parse(self.perform(url, credentials)?.as_bytes())
+                .map_err(|e| Error::Xml(e))?,
+        )
     }
 }
 
@@ -631,9 +644,10 @@ fn get_principal_url(url: &Url, credentials: &Credentials) -> Result<Url> {
                <d:current-user-principal />
            </d:prop>
         </d:propfind>
-    "#,
+    "#
+        .to_owned(),
     }
-    .perform(&url, credentials)?;
+    .perform_xml(&url, credentials)?;
 
     Ok(url.join(&apply_xml_path(
         &xml,
@@ -660,9 +674,10 @@ pub fn get_home_set_url(url: Url, credentials: &Credentials) -> Result<Url> {
         <c:calendar-home-set />
       </d:prop>
     </d:propfind>
-"#,
+"#
+        .to_owned(),
     }
-    .perform(&principal_url, credentials)?;
+    .perform_xml(&principal_url, credentials)?;
 
     Ok(principal_url.join(&apply_xml_path(&xml, &["response", "href"])?)?)
 }
@@ -685,9 +700,10 @@ pub fn get_calendars(url: &Url, credentials: &Credentials) -> Result<Vec<Calenda
         <c:comp-filter name="VCALENDAR" />
     </c:filter>
 </c:calendar-query>
-"#,
+"#
+        .to_owned(),
     }
-    .perform(&home_set_url, credentials)?;
+    .perform_xml(&home_set_url, credentials)?;
 
     let mut calendars = Vec::new();
     for r in xml.children.iter().filter_map(|c| c.as_element()) {

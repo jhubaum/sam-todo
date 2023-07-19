@@ -74,7 +74,7 @@ fn main() -> Result<(), server::Error> {
         }
     }
     if let Some(i) = data_to_sync {
-        data[i].sync()?;
+        data[i].send_updates(&credentials)?;
     }
 
     /*
