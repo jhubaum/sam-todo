@@ -10,6 +10,9 @@ use std::io::BufReader;
 use ureq::Agent;
 use url::{ParseError as UrlError, Url};
 
+use chrono::{DateTime, NaiveDateTime, Utc};
+pub type UtcDateTime = DateTime<Utc>;
+
 #[derive(Debug)]
 // TODO: Implement std error trait
 pub enum Error {
@@ -215,6 +218,7 @@ pub struct Calendar {
     pub url: Url,
     pub etag: String,
     pub name: String,
+    data: Vec<TaskCollection>,
 }
 
 // TODO: consolidate with ical::Task, pass url and etag as default values to TaskBuilder
@@ -227,12 +231,13 @@ pub struct TaskCollection {
     data: IcalCalendar,
 }
 
-pub struct Task<'a> {
-    pub index: usize,
+pub struct TaskRef<'a> {
+    pub collection_index: usize,
+    pub task_index: usize,
     data: &'a mut IcalTodo,
 }
 
-impl Task<'_> {
+impl TaskRef<'_> {
     fn find_property(&self, name: &str) -> Option<&IcalProperty> {
         self.data.properties.iter().find(|p| p.name == name)
     }
@@ -306,17 +311,6 @@ impl TaskCollection {
             etag: data.etag(),
             data: data.ical().unwrap_or(IcalCalendar::new()),
         })
-    }
-
-    pub fn tasks<'a>(&'a mut self) -> Vec<Task<'a>> {
-        let mut tasks = Vec::new();
-        for todo in self.data.todos.iter_mut() {
-            tasks.push(Task {
-                data: todo,
-                index: self.index,
-            });
-        }
-        tasks
     }
 
     pub fn send_updates(&self, credentials: &Credentials) -> Result<()> {
@@ -464,7 +458,44 @@ impl Calendar {
     pub fn query_url(url: &Url, credentials: &Credentials) -> Result<Vec<Calendar>> {
         get_calendars(url, credentials)
     }
-    pub fn query_data(&self, credentials: &Credentials) -> Result<Vec<TaskCollection>> {
+
+    pub fn send_collection_update(&self, collection: usize, credentials: &Credentials) -> Result<()> {
+        if collection < self.data.len() {
+            self.data[collection].send_updates(credentials)
+        }
+        else
+        {
+            Err(Error::Message("Invalid calendar index".to_owned()))
+        }
+    }
+
+    pub fn task(&mut self, collection: usize, task: usize) -> Option<TaskRef> {
+        if collection < self.data.len() && task < self.data[collection].data.todos.len() {
+            Some(TaskRef {
+                collection_index: collection,
+                task_index: task,
+                data: &mut self.data[collection].data.todos[task],
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn tasks<'a>(&'a mut self) -> Vec<TaskRef<'a>> {
+        let mut tasks = Vec::new();
+        for (i, collection) in self.data.iter_mut().enumerate() {
+            for (j, task) in collection.data.todos.iter_mut().enumerate() {
+                tasks.push(TaskRef {
+                    collection_index: i,
+                    task_index: j,
+                    data: task,
+                });
+            }
+        }
+        tasks
+    }
+
+    pub fn query_data(&mut self, credentials: &Credentials) -> Result<()> {
         let data = Request {
             req_type: "REPORT",
             depth: "1",
@@ -498,7 +529,8 @@ impl Calendar {
                 i,
             )?);
         }
-        Ok(res)
+        self.data = res;
+        Ok(())
     }
 
     fn from_xml(base_url: &Url, xml: &xmltree::Element) -> Result<Option<Self>> {
@@ -572,6 +604,7 @@ impl Calendar {
             url,
             etag: etag.unwrap(),
             name: displayname.unwrap(),
+            data: Vec::new(),
         }))
     }
 }

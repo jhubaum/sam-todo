@@ -42,14 +42,8 @@ fn main() -> Result<(), server::Error> {
     let mut data_to_sync = None;
     {
         let mut tasks = {
-            let mut tasks = Vec::new();
-            for c in data.iter_mut() {
-                tasks.append(&mut c.tasks());
-            }
-            tasks
-        };
+                    };
 
-        // TODO: Better sort by UUID, but haven't implemented getter for this yet
         tasks.sort_by_key(|t| t.summary().clone());
         for (i, task) in tasks.iter().enumerate() {
             println!(
